@@ -1622,6 +1622,13 @@ impl WillContract {
             panic_with_error!(&env, WillError::CheckinNotDue);
         }
 
+        // After an `emergency_checkin`, the owner is granted a guaranteed
+        // minimum active window during which keepers cannot re-trigger
+        // (#104). Re-triggering during cooldown is rejected.
+        if now < will.trigger_cooldown_until {
+            panic_with_error!(&env, WillError::CheckinNotDue);
+        }
+
         // Anchor the grace period to the missed check-in deadline, not to
         // whenever a keeper happened to call `trigger_will` (#457). This makes
         // the release time a pure function of the owner's last check-in, so a
@@ -1712,6 +1719,7 @@ impl WillContract {
         will.status = WillStatus::Active;
         will.trigger_time = None;
         will.last_checkin = now;
+        will.trigger_cooldown_until = now + TRIGGER_COOLDOWN_SECONDS;
         will.guardian_vote_weight = 0;
         will.guardian_votes = 0;
         will.guardian_cancel_vote_weight = 0;

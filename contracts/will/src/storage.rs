@@ -1764,3 +1764,90 @@ pub fn remove_failed_payout(env: &Env, will_id: u64, token: &Address, recipient:
     let key = DataKey::FailedPayout(will_id, token.clone(), recipient.clone());
     env.storage().persistent().remove(&key);
 }
+
+/// Migrates the complete owner portfolio from `old_owner` to `new_owner`.
+///
+/// This transfers both indexes:
+/// - `DataKey::OwnerWills(old_owner)` → `DataKey::OwnerWills(new_owner)`
+/// - `DataKey::OwnerStatusWills(old_owner, status)` for all six `WillStatus`
+///   variants → corresponding `DataKey::OwnerStatusWills(new_owner, status)`
+///
+/// The transfer is **additive**: if `new_owner` already has entries in any of
+/// these indexes, the ids from `old_owner`'s lists are merged in (deduped)
+/// rather than overwritten.  Once all ids have been moved the old keys are
+/// removed to reclaim storage rent.
+///
+/// Called by `WillContract::migrate_owner_portfolio`, which requires auth from
+/// `old_owner` and validates that `old_owner != new_owner`.
+pub fn migrate_owner_portfolio(env: &Env, old_owner: &Address, new_owner: &Address) {
+    // ── OwnerWills ──────────────────────────────────────────────────────────
+    let old_key = DataKey::OwnerWills(old_owner.clone());
+    let old_ids: Vec<u64> = env
+        .storage()
+        .persistent()
+        .get(&old_key)
+        .unwrap_or_else(|| Vec::new(env));
+
+    if !old_ids.is_empty() {
+        let new_key = DataKey::OwnerWills(new_owner.clone());
+        let mut new_ids: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&new_key)
+            .unwrap_or_else(|| Vec::new(env));
+
+        for id in old_ids.iter() {
+            if !new_ids.contains(id) {
+                new_ids.push_back(id);
+            }
+        }
+
+        env.storage().persistent().set(&new_key, &new_ids);
+        env.storage()
+            .persistent()
+            .extend_ttl(&new_key, LIFETIME_THRESHOLD, BUMP_AMOUNT);
+        env.storage().persistent().remove(&old_key);
+    }
+
+    // ── OwnerStatusWills (all six status buckets) ────────────────────────────
+    for status in [
+        WillStatus::PendingConfirmation,
+        WillStatus::Active,
+        WillStatus::Triggered,
+        WillStatus::Released,
+        WillStatus::Cancelled,
+        WillStatus::Settled,
+    ] {
+        let old_status_key = DataKey::OwnerStatusWills(old_owner.clone(), status.clone());
+        let old_status_ids: Vec<u64> = match env.storage().persistent().get(&old_status_key) {
+            Some(v) => v,
+            None => continue,
+        };
+
+        if old_status_ids.is_empty() {
+            env.storage().persistent().remove(&old_status_key);
+            continue;
+        }
+
+        let new_status_key = DataKey::OwnerStatusWills(new_owner.clone(), status);
+        let mut new_status_ids: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&new_status_key)
+            .unwrap_or_else(|| Vec::new(env));
+
+        for id in old_status_ids.iter() {
+            if !new_status_ids.contains(id) {
+                new_status_ids.push_back(id);
+            }
+        }
+
+        env.storage()
+            .persistent()
+            .set(&new_status_key, &new_status_ids);
+        env.storage()
+            .persistent()
+            .extend_ttl(&new_status_key, LIFETIME_THRESHOLD, BUMP_AMOUNT);
+        env.storage().persistent().remove(&old_status_key);
+    }
+}

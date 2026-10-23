@@ -519,3 +519,19 @@ pub fn payout_redirected(
         ),
     );
 }
+
+/// Published when an owner migrates their complete will portfolio to a new address.
+///
+/// Topics: `("portmig", old_owner)`.
+/// Data: `new_owner` — the address that now holds the migrated indexes.
+///
+/// Emitted by `WillContract::migrate_owner_portfolio` after both
+/// `DataKey::OwnerWills` and all `DataKey::OwnerStatusWills` buckets have
+/// been transferred and the old keys have been pruned.  Off-chain indexers can
+/// use this event to update identity mappings without re-scanning every will.
+pub fn owner_portfolio_migrated(env: &Env, old_owner: &Address, new_owner: &Address) {
+    env.events().publish(
+        (symbol_short!("portmig"), old_owner.clone()),
+        new_owner.clone(),
+    );
+}

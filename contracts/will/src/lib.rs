@@ -406,6 +406,8 @@ mod issue_57_58_59_60_test;
 #[cfg(test)]
 mod migrate_will_test;
 #[cfg(test)]
+mod issue_110_test;
+#[cfg(test)]
 mod protocol_stats_test;
 #[cfg(test)]
 mod renounce_validation_test;
@@ -4625,6 +4627,47 @@ impl WillContract {
 
         storage::save_will(&env, &will);
         events::will_migrated(&env, will_id, &owner, old_version, CURRENT_SCHEMA_VERSION);
+    }
+
+    /// Transfers the complete owner portfolio index from `old_owner` to `new_owner`.
+    ///
+    /// Migrates both indexes:
+    /// - `DataKey::OwnerWills(old_owner)` — the list of all will ids the
+    ///   old owner has ever created.
+    /// - `DataKey::OwnerStatusWills(old_owner, status)` for all six
+    ///   `WillStatus` variants — the per-status sub-lists used by
+    ///   `get_wills_by_owner_and_status` / `get_owner_status_page`.
+    ///
+    /// After this call `get_wills_by_owner(new_owner, ...)` returns the full
+    /// combined portfolio and the old owner's index keys are removed to reclaim
+    /// storage rent.  If `new_owner` already has wills of their own the id
+    /// lists are merged (de-duplicated) rather than overwritten.
+    ///
+    /// Note: this entry point migrates **index keys only**.  The `Will` records
+    /// themselves still carry `owner = old_owner`; callers that need the will's
+    /// owner field to match the new identity should follow up with on-chain
+    /// account key rotation or use the migrated index solely for portfolio
+    /// discovery purposes.
+    ///
+    /// # Parameters
+    /// - `old_owner`: the address whose index is being transferred; must
+    ///   authorise this call.
+    /// - `new_owner`: the address that will receive the migrated index.
+    ///
+    /// # Panics
+    /// - [`WillError::NotOwner`] if `old_owner == new_owner` (a self-migration
+    ///   is a no-op and would indicate a caller bug).
+    pub fn migrate_owner_portfolio(env: Env, old_owner: Address, new_owner: Address) {
+        old_owner.require_auth();
+
+        // Prevent trivial no-ops: migrating to yourself changes nothing and
+        // would still consume budget, so reject it explicitly.
+        if old_owner == new_owner {
+            panic_with_error!(&env, WillError::NotOwner);
+        }
+
+        storage::migrate_owner_portfolio(&env, &old_owner, &new_owner);
+        events::owner_portfolio_migrated(&env, &old_owner, &new_owner);
     }
 
     /// Merges two active wills owned by the same address into a single will.

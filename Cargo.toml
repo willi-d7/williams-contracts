@@ -7,7 +7,7 @@ members = ["contracts/will"]
 exclude = ["fuzz"]
 
 [workspace.dependencies]
-soroban-sdk = { version = "28.0.0" }
+soroban-sdk = { version = "29.0.1" }
 
 # Tested toolchain matrix (see docs/TOOLCHAIN.md for the full matrix and the
 # update procedure). The Rust version below must match rust-toolchain.toml;

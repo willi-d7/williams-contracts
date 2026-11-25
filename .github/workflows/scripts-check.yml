@@ -145,7 +145,7 @@ jobs:
         run: rustup target add wasm32v1-none
 
       - name: Cache Rust build artifacts
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -159,7 +159,7 @@ jobs:
       # version bump or dependency change invalidates the cache.
       - name: Cache stellar-cli
         id: stellar-cli-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cargo/bin/stellar
           key: ${{ runner.os }}-${{ runner.arch }}-stellar-cli-${{ env.STELLAR_CLI_VERSION }}-${{ hashFiles('**/Cargo.lock') }}
@@ -217,7 +217,7 @@ jobs:
       # version bump or dependency change invalidates the cache.
       - name: Cache stellar-cli
         id: stellar-cli-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cargo/bin/stellar
           key: ${{ runner.os }}-${{ runner.arch }}-stellar-cli-${{ env.STELLAR_CLI_VERSION }}-${{ hashFiles('**/Cargo.lock') }}

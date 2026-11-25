@@ -3354,6 +3354,30 @@ impl WillContract {
         storage::get_protocol_stats(&env)
     }
 
+    /// Returns the exact locked total for a single `token` (#239).
+    ///
+    /// This is the bounded, single-asset counterpart to
+    /// [`Self::get_protocol_stats`]: it reads only the aggregate storage entry
+    /// for `token` via [`storage::get_total_locked`] instead of walking the
+    /// whole global token directory, so its read footprint does not grow with
+    /// the number of distinct tokens the protocol has ever seen.
+    ///
+    /// # Semantics
+    /// - A token that has never been seen, or whose total has been fully
+    ///   drained back to zero, returns `0`. Absent and zero totals are
+    ///   deliberately indistinguishable: the aggregate storage does not keep a
+    ///   separate "known" flag, and both mean "nothing is currently locked in
+    ///   this token".
+    /// - The returned value agrees with the corresponding entry of
+    ///   [`Self::get_protocol_stats`] (or `0` if that entry is absent) after
+    ///   any authority corrections applied by
+    ///   [`Self::repair_protocol_stats`].
+    ///
+    /// [`Self::get_protocol_stats`] is retained unchanged for compatibility.
+    pub fn get_total_locked_by_token(env: Env, token: Address) -> i128 {
+        storage::get_total_locked(&env, &token)
+    }
+
     /// Read-only invariant check (#441): recomputes the protocol stats by
     /// walking every will in storage and compares them with the stored,
     /// incrementally maintained counters.
@@ -3538,6 +3562,111 @@ impl WillContract {
             total_wills: ids.len(),
             active_wills,
             total_locked_by_token,
+        }
+    }
+
+    /// Returns a bounded page of aggregate statistics for `owner` (#245).
+    ///
+    /// This is the chunked counterpart to [`Self::get_owner_stats`]: instead
+    /// of loading every will in the owner's discovery index in one call, it
+    /// loads at most `limit` wills (capped at [`storage::MAX_PAGE_SIZE`]) and
+    /// returns their partial totals together with a continuation cursor. A
+    /// client combines pages off-chain into the same result the aggregate
+    /// endpoint would produce for an unchanged small portfolio.
+    ///
+    /// # Parameters
+    /// - `owner`: the address to aggregate wills for.
+    /// - `cursor`: optional will id to paginate after (exclusive). Pass `None`
+    ///   or `0` for the first page.
+    /// - `limit`: maximum number of wills to load in this call. Capped at
+    ///   [`storage::MAX_PAGE_SIZE`]. A `limit` of `0` returns an empty page
+    ///   with `next_cursor == None`.
+    ///
+    /// # Per-call bound
+    /// Each call performs at most `min(limit, MAX_PAGE_SIZE)` will loads, so
+    /// its read footprint is bounded independently of the portfolio size.
+    ///
+    /// # Counting semantics
+    /// - `total_wills` counts every will in this page regardless of status;
+    ///   `active_wills` and `total_locked_by_token` cover only non-terminal
+    ///   wills (`PendingConfirmation`, `Active`, `Triggered`), matching
+    ///   [`Self::get_owner_stats`] and [`ProtocolStats`].
+    /// - Pages are **not** a snapshot. Concurrent lifecycle changes between
+    ///   calls (a will created, cancelled, released, or archived) may cause a
+    ///   will to be counted twice or omitted when the pages are summed. Callers
+    ///   needing a point-in-time total should use [`Self::get_owner_stats`].
+    /// - Migrated discovery indexes are counted by their current contents: the
+    ///   page walks whatever ids `storage::get_owner_wills` returns at call
+    ///   time.
+    ///
+    /// # Paging
+    /// Pass `next_cursor` back as `cursor` to fetch the next page; a `None`
+    /// cursor means the last page has been returned.
+    pub fn get_owner_stats_page(
+        env: Env,
+        owner: Address,
+        cursor: Option<u64>,
+        limit: u32,
+    ) -> OwnerStatsPage {
+        let ids = storage::get_owner_wills(&env, &owner);
+        let page_size = limit.min(storage::MAX_PAGE_SIZE);
+        let cursor_val = cursor.unwrap_or(0);
+        let mut skipping = cursor.is_some();
+
+        let mut total_wills: u32 = 0;
+        let mut active_wills: u32 = 0;
+        let mut locked: Map<Address, i128> = Map::new(&env);
+        let mut last_id: Option<u64> = None;
+
+        for id in ids.iter() {
+            if total_wills >= page_size {
+                break;
+            }
+            if skipping {
+                if id <= cursor_val {
+                    continue;
+                }
+                skipping = false;
+            }
+            let will = match storage::load_will(&env, id) {
+                Ok(w) => w,
+                Err(e) => panic_with_error!(&env, e),
+            };
+            total_wills += 1;
+            last_id = Some(id);
+            if matches!(
+                will.status,
+                WillStatus::PendingConfirmation | WillStatus::Active | WillStatus::Triggered
+            ) {
+                active_wills += 1;
+                for (token_addr, amount) in will.balances.iter() {
+                    let prev = locked.get(token_addr.clone()).unwrap_or(0);
+                    locked.set(token_addr, prev + amount);
+                }
+            }
+        }
+
+        let mut total_locked_by_token = Vec::new(&env);
+        for (token, total_locked) in locked.iter() {
+            total_locked_by_token.push_back(TokenLockedBalance {
+                token,
+                total_locked,
+            });
+        }
+
+        let next_cursor = if total_wills >= page_size && page_size > 0 {
+            last_id
+        } else {
+            None
+        };
+
+        OwnerStatsPage {
+            stats: OwnerStats {
+                total_wills,
+                active_wills,
+                total_locked_by_token,
+            },
+            next_cursor,
         }
     }
 
@@ -3732,6 +3861,11 @@ impl WillContract {
     /// is cancelled or released. `get_wills` follows the same convention so
     /// callers can safely pass any id without error-handling overhead.
     ///
+    /// This permissive behavior is retained for compatibility. Callers that
+    /// need to distinguish a genuinely absent id from a present record that
+    /// cannot be decoded (e.g. an estate written under an unsupported schema
+    /// version) should use [`Self::get_wills_diagnostics`] instead (#240).
+    ///
     /// # Panics
     /// - [`WillError::TooManyIds`] if `ids.len()` exceeds `MAX_GET_WILLS_IDS`.
     ///
@@ -3750,6 +3884,25 @@ impl WillContract {
     /// assert_eq!(dupes.get(0).unwrap().id, will_id_a);
     /// assert_eq!(dupes.get(1).unwrap().id, will_id_a);
     /// ```
+    pub fn get_wills_diagnostics(env: Env, ids: Vec<u64>) -> Vec<WillLookupResult> {
+        if ids.len() > MAX_GET_WILLS_IDS {
+            panic_with_error!(&env, WillError::TooManyIds);
+        }
+        let mut results = Vec::new(&env);
+        for id in ids.iter() {
+            let result = match storage::load_will(&env, id) {
+                Ok(will) => WillLookupResult::Found(will),
+                Err(WillError::WillNotFound) => WillLookupResult::NotFound,
+                Err(WillError::UnsupportedSchemaVersion) => {
+                    WillLookupResult::UnsupportedSchemaVersion
+                }
+                Err(e) => panic_with_error!(&env, e),
+            };
+            results.push_back(result);
+        }
+        results
+    }
+
     pub fn get_wills(env: Env, ids: Vec<u64>) -> Vec<Will> {
         if ids.len() > MAX_GET_WILLS_IDS {
             panic_with_error!(&env, WillError::TooManyIds);
@@ -7376,6 +7529,23 @@ fn distribute(env: &Env, will: &mut Will, keeper: &Option<Address>) {
     }
 
     events::inheritance_released(env, will.id, token_count, count);
+}
+
+/// Per-id outcome of [`WillContract::get_wills_diagnostics`] (#240).
+///
+/// Unlike [`WillContract::get_wills`], which silently skips every id that
+/// cannot be loaded, this distinguishes a genuinely absent record from one
+/// that exists but cannot be decoded under the current schema.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum WillLookupResult {
+    /// The will exists and was decoded successfully.
+    Found(Will),
+    /// No will is stored under this id.
+    NotFound,
+    /// A record exists but was written under an unsupported schema version
+    /// ([`WillError::UnsupportedSchemaVersion`]); it needs migration.
+    UnsupportedSchemaVersion,
 }
 
 /// Attempts to transfer `amount` of `token_addr` from `from` to `to`,

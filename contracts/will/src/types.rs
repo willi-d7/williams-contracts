@@ -235,6 +235,17 @@ pub struct ProtocolStatsAudit {
 /// Returned by `get_owner_stats` so clients can show ownership totals
 /// alongside a paginated `get_wills_by_owner` listing without walking every
 /// page themselves.
+///
+/// # Portfolio-size limitation
+///
+/// `get_owner_stats` loads **every** will in the owner's discovery index in a
+/// single call, so its read footprint grows with the owner's whole portfolio
+/// (the production index cap is `storage::MAX_WILLS_PER_INDEX`). Callers with
+/// large portfolios should prefer the bounded, paginated
+/// [`OwnerStatsPage`] API (`get_owner_stats_page`), which loads at most a
+/// documented number of wills per call and returns partial totals a client can
+/// combine off-chain. The aggregate API is retained unchanged for
+/// compatibility.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OwnerStats {
@@ -245,6 +256,83 @@ pub struct OwnerStats {
     pub active_wills: u32,
     /// Locked balances by token, summed across the owner's non-terminal wills.
     pub total_locked_by_token: Vec<TokenLockedBalance>,
+}
+
+/// One page of an owner's aggregate statistics, returned by
+/// `get_owner_stats_page` (issue #245).
+///
+/// A page covers a contiguous slice of the owner's discovery index, so a
+/// client can walk the whole portfolio in bounded steps and combine the
+/// partial [`OwnerStats`] values into the same totals the aggregate
+/// `get_owner_stats` call would return for an unchanged small portfolio.
+///
+/// # Per-call ID bound
+///
+/// Each call loads at most the requested number of wills from the discovery
+/// index, clamped to `storage::MAX_WILLS_PER_INDEX`. The bound applies to the
+/// number of index entries read, not to the number of wills that end up
+/// counted: entries whose record is missing or incompatible are still read
+/// (and therefore consume the bound) but contribute nothing to the totals.
+///
+/// # Cross-call consistency policy
+///
+/// Pages are **not** a snapshot: there is no isolation between calls. Each
+/// page is computed from the discovery index and will records as they exist
+/// at the time of that call, so:
+///
+/// - a will that changes lifecycle state between two page reads is counted
+///   according to its state when its page was read;
+/// - a will created or removed between two page reads may be counted in a
+///   later page, or not at all, depending on where it lands relative to the
+///   cursor;
+/// - a migrated discovery index is counted by its **current** contents — the
+///   cursor is a position in the index as it exists on that call, not a
+///   stable identifier of a particular will.
+///
+/// Clients that need a point-in-time total should read all pages and treat
+/// the result as approximate, or use the aggregate `get_owner_stats` call.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OwnerStatsPage {
+    /// Partial totals for the wills covered by this page.
+    pub stats: OwnerStats,
+    /// Cursor to pass to fetch the next page, or `None` when this is the
+    /// last page.
+    pub next_cursor: Option<u64>,
+    /// True when this page reaches the end of the owner's discovery index,
+    /// i.e. no further pages exist. Mirrors `next_cursor.is_none()` and is
+    /// provided so callers can branch on a single boolean.
+    pub done: bool,
+}
+
+/// Per-ID outcome of a batch will lookup, returned by
+/// `get_wills_with_diagnostics` (issue #240).
+///
+/// # Result mapping
+///
+/// The returned vector maps **1:1** to the input `ids` vector: the result at
+/// index `i` describes the lookup of `ids[i]`. Input order is preserved and
+/// duplicate IDs are looked up and reported once per occurrence, so a caller
+/// can zip the two vectors without any further bookkeeping.
+///
+/// This lets a caller distinguish an ID that does not exist ([`Self::NotFound`])
+/// from one that exists but cannot be decoded by this contract version
+/// ([`Self::UnsupportedSchemaVersion`]) — a distinction the permissive
+/// `get_wills` lookup deliberately hides by skipping both.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum WillLookupResult {
+    /// The will exists and was decoded successfully.
+    Found(Will),
+    /// No will is stored under the requested ID.
+    NotFound,
+    /// A will is stored under the requested ID, but it was written with a
+    /// schema version this contract cannot decode. The record needs
+    /// migration; it is present, not absent.
+    UnsupportedSchemaVersion,
+    /// The lookup failed with another declared contract error, reported by
+    /// its numeric code. No unrelated private data is exposed.
+    Error(u32),
 }
 
 /// Reserved: a beneficiary's claimable share in a pull-based distribution.

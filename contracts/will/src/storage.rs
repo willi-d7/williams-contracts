@@ -207,6 +207,32 @@ pub fn get_total_locked(env: &Env, token: &Address) -> i128 {
     }
 }
 
+/// Reads the exact protocol-wide locked total for a single `token`.
+///
+/// This is the bounded, single-asset counterpart of [`get_protocol_stats`]:
+/// it never enumerates the global token directory, so its read footprint does
+/// not grow with the number of distinct tokens the protocol has ever tracked.
+///
+/// # Semantics
+///
+/// - A token with a non-zero locked total returns that exact total.
+/// - A token with **no** recorded total — never seen, fully released, or
+///   unknown to the protocol — returns `0`. Absent and zero are therefore
+///   indistinguishable, which matches how [`get_protocol_stats`] omits
+///   zero-total tokens from its result.
+///
+/// # Storage touched
+///
+/// The primary read is the discrete `DataKey::TotalLocked(token)` persistent
+/// entry. The legacy fallbacks in [`get_total_locked`] (the
+/// `LockedTotalsRebuilt` marker, a legacy instance-storage total, and the
+/// pre-migration `ProtocolStats` snapshot) are consulted only when that entry
+/// is absent, so the result always agrees with the aggregate API after
+/// authority corrections.
+pub fn get_total_locked_by_token(env: &Env, token: &Address) -> i128 {
+    get_total_locked(env, token)
+}
+
 /// Sets the total locked balance for a specific token in discrete persistent storage.
 pub fn set_total_locked(env: &Env, token: &Address, amount: i128) {
     let key = DataKey::TotalLocked(token.clone());
@@ -923,6 +949,23 @@ pub fn load_will(env: &Env, will_id: u64) -> Result<Will, WillError> {
     migration::decode_will(env, &raw)
 }
 
+/// Per-ID diagnostic read of a will entry, for batch callers that must tell
+/// an absent id apart from a present-but-incompatible one (#240).
+///
+/// Unlike the permissive batch lookup that silently skips every load error,
+/// this surfaces the distinction explicitly:
+///
+/// - [`WillError::WillNotFound`] — the id was never created, was explicitly
+///   archived, or its entry was TTL-archived by the network (see
+///   [`load_will`] for why these cannot be told apart).
+/// - [`WillError::UnsupportedSchemaVersion`] — the entry exists but matches no
+///   known layout, so it needs migration rather than being reported absent.
+///
+/// No other data is exposed: the error carries only the declared error code.
+pub fn load_will_diagnostic(env: &Env, will_id: u64) -> Result<Will, WillError> {
+    load_will(env, will_id)
+}
+
 /// Adds `will_id` to the index list stored at `key`, if not already present.
 ///
 /// Enforces [`MAX_WILLS_PER_INDEX`]: if the list is already at the cap and
@@ -1173,6 +1216,37 @@ pub fn get_owner_wills(env: &Env, owner: &Address) -> Vec<u64> {
             .extend_ttl(&key, LIFETIME_THRESHOLD, BUMP_AMOUNT);
     }
     ids.unwrap_or_else(|| Vec::new(env))
+}
+
+/// Returns one bounded page of the will ids owned by `owner`, together with
+/// the cursor to pass to the next call.
+///
+/// `cursor` is an exclusive will id (pass `None` or `0` for the first page);
+/// `limit` is capped at [`MAX_PAGE_SIZE`]. The returned cursor is the last id
+/// of the page when more ids may follow, and `None` once the index is
+/// exhausted, so a caller can stop as soon as it sees `None`.
+///
+/// This is the building block for bounded owner-statistics accumulation: each
+/// call loads at most `min(limit, MAX_PAGE_SIZE)` ids from the owner index,
+/// independent of the total portfolio size. It relies on the same
+/// **ORDERING INVARIANT** as [`paginate_ids`] — the index stays monotonically
+/// ascending and removals are order-preserving — so paging never skips or
+/// repeats an id.
+pub fn get_owner_wills_page(
+    env: &Env,
+    owner: &Address,
+    cursor: Option<u64>,
+    limit: u32,
+) -> (Vec<u64>, Option<u64>) {
+    let ids = get_owner_wills(env, owner);
+    let page = paginate_ids(env, &ids, cursor, limit);
+    let next_cursor = match page.last() {
+        // A short page means the index is exhausted; a full page may have
+        // more ids after it.
+        Some(last) if page.len() >= limit.min(MAX_PAGE_SIZE) => Some(last),
+        _ => None,
+    };
+    (page, next_cursor)
 }
 
 // ── Per-owner, per-status index helpers (#77) ────────────────────────────────

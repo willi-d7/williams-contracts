@@ -1,0 +1,100 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/willi-d7/williams-contracts/spec/will-spec.schema.json",
+  "title": "Williams Contracts Spec Artifact",
+  "description": "JSON Schema describing the repository-specific machine-readable contract-spec representation used by the committed snapshots in spec/ (e.g. will-v0.1.0.json, will-v1.3.0.json). This schema validates the artifact container format: a top-level object carrying contract metadata, a functions array, a types map, and an optional errors array.",
+  "type": "object",
+  "required": [
+    "contract",
+    "crate_version",
+    "generated_by",
+    "functions",
+    "types"
+  ],
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "Reference to the schema used to validate this artifact. Resolves to ./will-spec.schema.json relative to the snapshot file."
+    },
+    "contract": {
+      "type": "string",
+      "description": "Name of the contract described by this artifact.",
+      "minLength": 1
+    },
+    "crate_version": {
+      "type": "string",
+      "description": "Version of the crate that produced this artifact.",
+      "minLength": 1
+    },
+    "generated_by": {
+      "type": "string",
+      "description": "Tool or process that generated this artifact.",
+      "minLength": 1
+    },
+    "functions": {
+      "type": "array",
+      "description": "Functions exported by the contract.",
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "inputs",
+          "output"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Function name.",
+            "minLength": 1
+          },
+          "inputs": {
+            "type": "array",
+            "description": "Ordered list of input parameter type strings.",
+            "items": {
+              "type": "string"
+            }
+          },
+          "output": {
+            "type": "string",
+            "description": "Return type string."
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "types": {
+      "type": "object",
+      "description": "Map from type name to the ordered list of its field strings.",
+      "additionalProperties": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    },
+    "errors": {
+      "type": "array",
+      "description": "Optional list of contract error definitions.",
+      "items": {
+        "type": "object",
+        "required": [
+          "code",
+          "name"
+        ],
+        "properties": {
+          "code": {
+            "type": "integer",
+            "description": "Numeric error code."
+          },
+          "name": {
+            "type": "string",
+            "description": "Error name.",
+            "minLength": 1
+          }
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
+}

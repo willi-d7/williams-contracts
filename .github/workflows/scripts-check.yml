@@ -60,7 +60,7 @@ jobs:
       contents: read
       issues: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Validate issue-template labels
         env:
           GH_TOKEN: ${{ github.token }}
@@ -71,7 +71,7 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4.1.1
+      - uses: actions/checkout@v7
 
       # Issue #255: discover every shell script under both scripts/ and
       # .github/scripts/ deterministically so new guards are picked up
@@ -128,7 +128,7 @@ jobs:
     env:
       ACTIONLINT_VERSION: 1.7.7
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install pinned actionlint
         run: |
@@ -150,7 +150,7 @@ jobs:
   deploy-sandbox:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Rust wasm32v1-none target
         run: rustup target add wasm32v1-none
@@ -203,7 +203,7 @@ jobs:
     # also runs its own fixture self-test before checking the real docs.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Check Markdown links and anchors
         run: .github/scripts/check-markdown-links.sh
@@ -215,7 +215,7 @@ jobs:
     # updating the spec will fail here.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Rust wasm32v1-none target
         run: rustup target add wasm32v1-none
